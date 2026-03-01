@@ -12,6 +12,12 @@ pcall(function()
 end)
 if not IYEsp then warn("IY ESP failed to load") end
 
+local Window = Library:CreateWindow({
+    Title    = 'Reznov Hub v1.2',
+    Center   = true,
+    AutoShow = true,
+})
+
 local Services = {
     Players         = game:GetService("Players"),
     RunService      = game:GetService("RunService"),
