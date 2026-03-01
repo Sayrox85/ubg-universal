@@ -6,14 +6,9 @@ if not success or not Library then warn("Failed to load UI library") return end
 local ThemeManager = loadstring(game:HttpGet('https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/addons/ThemeManager.lua'))()
 local SaveManager   = loadstring(game:HttpGet('https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/addons/SaveManager.lua'))()
 
-local IYEsp
-pcall(function()
-    IYEsp = loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/dependencies/esp'))()
-end)
-if not IYEsp then warn("IY ESP failed to load") end
 
 local Window = Library:CreateWindow({
-    Title    = 'Reznov Hub v1.2',
+    Title    = 'Reznov Hub v1.2 | niggarware',
     Center   = true,
     AutoShow = true,
 })
@@ -108,8 +103,19 @@ local config = {
     aimbotSticky           = false,
     aimbotSwitchDelay      = 0.5,
 
-    espDistance  = 1000,
-    espTeamCheck = false,
+    espDistance   = 1000,
+    espTeamCheck  = false,
+    espBox        = false,
+    espName       = false,
+    espHealth     = false,
+    espTracer     = false,
+    espChams      = false,
+    espNameMode   = "Both",   -- "Display", "Username", "Both"
+    espBoxColor   = Color3.fromRGB(255, 50, 50),
+    espNameColor  = Color3.fromRGB(255, 255, 255),
+    espTracerColor = Color3.fromRGB(255, 50, 50),
+    espChamsColor = Color3.fromRGB(255, 50, 50),
+    espChamsAlpha = 0.6,
 
     fov      = 70,
     savedFOV = nil,     -- FIX: nil so first enable captures real game FOV
@@ -542,11 +548,252 @@ local function ToggleAimbot(enabled)
     end
 end
 
--- ─── IY ESP ──────────────────────────────────────────────────────────────────
+-- ─── ESP ─────────────────────────────────────────────────────────────────────
+-- Fully self-contained Drawing-based ESP. No external dependency.
 
-local function SetIYEsp(espType, enabled)
-    if not IYEsp then return end
-    pcall(function() if enabled then IYEsp:Enable(espType) else IYEsp:Disable(espType) end end)
+local espObjects  = {}   -- [player] = { box, nameLabel, healthBg, healthBar, tracer, chams={} }
+local espRenderConn = nil
+
+local function espGetName(p)
+    local dn = p.DisplayName
+    local un = p.Name
+    local mode = config.espNameMode
+    if mode == "Display"  then return dn end
+    if mode == "Username" then return un end
+    -- Both
+    return dn ~= un and (dn .. "  [" .. un .. "]") or un
+end
+
+local function espIsTeammate(p)
+    if not config.espTeamCheck then return false end
+    return p.Team and plr.Team and p.Team == plr.Team
+end
+
+local function espMakeObjects(p)
+    local box = trackDrawing(Drawing.new("Square"))
+    box.Thickness = 1; box.Filled = false; box.Color = config.espBoxColor
+    box.Visible = false
+
+    local nameLabel = trackDrawing(Drawing.new("Text"))
+    nameLabel.Size = 13; nameLabel.Center = true; nameLabel.Outline = true
+    nameLabel.Color = config.espNameColor; nameLabel.Visible = false
+
+    local hbBg = trackDrawing(Drawing.new("Square"))
+    hbBg.Thickness = 1; hbBg.Filled = true
+    hbBg.Color = Color3.fromRGB(0,0,0); hbBg.Visible = false
+
+    local hbBar = trackDrawing(Drawing.new("Square"))
+    hbBar.Thickness = 1; hbBar.Filled = true
+    hbBar.Color = Color3.fromRGB(0,255,0); hbBar.Visible = false
+
+    local tracer = trackDrawing(Drawing.new("Line"))
+    tracer.Thickness = 1; tracer.Color = config.espTracerColor; tracer.Visible = false
+
+    espObjects[p] = {
+        box      = box,
+        name     = nameLabel,
+        hbBg     = hbBg,
+        hbBar    = hbBar,
+        tracer   = tracer,
+        chams    = {},
+    }
+end
+
+local function espRemoveObjects(p)
+    local obj = espObjects[p]
+    if not obj then return end
+    pcall(function() obj.box:Remove()    end)
+    pcall(function() obj.name:Remove()   end)
+    pcall(function() obj.hbBg:Remove()   end)
+    pcall(function() obj.hbBar:Remove()  end)
+    pcall(function() obj.tracer:Remove() end)
+    for _, c in ipairs(obj.chams) do pcall(function() c:Destroy() end) end
+    espObjects[p] = nil
+end
+
+local function espApplyChams(p, enable)
+    local obj = espObjects[p]
+    if not obj then return end
+    -- remove old chams first
+    for _, c in ipairs(obj.chams) do pcall(function() c:Destroy() end) end
+    obj.chams = {}
+    if not enable or not p.Character then return end
+    for _, part in ipairs(p.Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local hl = Instance.new("SelectionBox")
+            hl.Adornee        = part
+            hl.Color3         = config.espChamsColor
+            hl.LineThickness  = 0
+            hl.SurfaceColor3  = config.espChamsColor
+            hl.SurfaceTransparency = config.espChamsAlpha
+            hl.Parent         = Services.CoreGui
+            table.insert(obj.chams, hl)
+        end
+    end
+end
+
+local function espUpdateChamsColor()
+    for p, obj in pairs(espObjects) do
+        for _, c in ipairs(obj.chams) do
+            pcall(function()
+                c.Color3           = config.espChamsColor
+                c.SurfaceColor3    = config.espChamsColor
+                c.SurfaceTransparency = config.espChamsAlpha
+            end)
+        end
+    end
+end
+
+local function espRebuildAll()
+    -- called when a toggle changes; refreshes chams on/off and color-only changes
+    for p, _ in pairs(espObjects) do
+        espApplyChams(p, config.espChams)
+    end
+end
+
+local function espStartRender()
+    if espRenderConn then return end
+    espRenderConn = gc(Services.RunService.RenderStepped:Connect(function()
+        if state.unloaded then return end
+        local vpSize = camera.ViewportSize
+
+        for _, p in pairs(Services.Players:GetPlayers()) do
+            if p == plr then continue end
+
+            local obj = espObjects[p]
+            if not obj then continue end
+
+            local pchar  = p.Character
+            local root   = pchar and pchar:FindFirstChild("HumanoidRootPart")
+            local phum   = pchar and pchar:FindFirstChildOfClass("Humanoid")
+            local anyOn  = config.espBox or config.espName or config.espHealth or config.espTracer or config.espChams
+
+            if not root or not anyOn or espIsTeammate(p) or not pchar then
+                obj.box.Visible    = false
+                obj.name.Visible   = false
+                obj.hbBg.Visible   = false
+                obj.hbBar.Visible  = false
+                obj.tracer.Visible = false
+                continue
+            end
+
+            -- world-to-screen for root
+            local rootSP, rootOnScreen = camera:WorldToViewportPoint(root.Position)
+            if not rootOnScreen or rootSP.Z < 0 then
+                obj.box.Visible    = false
+                obj.name.Visible   = false
+                obj.hbBg.Visible   = false
+                obj.hbBar.Visible  = false
+                obj.tracer.Visible = false
+                continue
+            end
+
+            local dist = (root.Position - camera.CFrame.Position).Magnitude
+            if dist > config.espDistance then
+                obj.box.Visible    = false
+                obj.name.Visible   = false
+                obj.hbBg.Visible   = false
+                obj.hbBar.Visible  = false
+                obj.tracer.Visible = false
+                continue
+            end
+
+            -- estimate box bounds using head and HRP
+            local head = pchar:FindFirstChild("Head")
+            local headSP = head and select(1, camera:WorldToViewportPoint(head.Position + Vector3.new(0, head.Size.Y/2, 0)))
+                or Vector3.new(rootSP.X, rootSP.Y - 30, 0)
+            local footSP = select(1, camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3, 0)))
+
+            local boxH = math.abs(headSP.Y - footSP.Y)
+            local boxW = boxH * 0.5
+            local boxX = rootSP.X - boxW/2
+            local boxY = headSP.Y
+
+            -- Box
+            if config.espBox then
+                obj.box.Size     = Vector2.new(boxW, boxH)
+                obj.box.Position = Vector2.new(boxX, boxY)
+                obj.box.Color    = config.espBoxColor
+                obj.box.Visible  = true
+            else
+                obj.box.Visible = false
+            end
+
+            -- Name
+            if config.espName then
+                obj.name.Text     = espGetName(p)
+                obj.name.Color    = config.espNameColor
+                obj.name.Position = Vector2.new(rootSP.X, boxY - 16)
+                obj.name.Visible  = true
+            else
+                obj.name.Visible = false
+            end
+
+            -- Health bar (left side of box)
+            if config.espHealth and phum then
+                local ratio  = math.clamp(phum.Health / math.max(phum.MaxHealth, 1), 0, 1)
+                local barW   = 3
+                local barX   = boxX - barW - 2
+                local barH   = boxH * ratio
+                obj.hbBg.Size     = Vector2.new(barW, boxH)
+                hbBg.Position = Vector2.new(barX, boxY)
+                hbBg.Visible  = true
+                obj.hbBar.Size     = Vector2.new(barW, barH)
+                obj.hbBar.Position = Vector2.new(barX, boxY + (boxH - barH))
+                obj.hbBar.Color    = Color3.fromRGB(math.floor(255*(1-ratio)), math.floor(255*ratio), 0)
+                obj.hbBar.Visible  = true
+            else
+                obj.hbBg.Visible  = false
+                obj.hbBar.Visible = false
+            end
+
+            -- Tracer
+            if config.espTracer then
+                obj.tracer.From    = Vector2.new(vpSize.X/2, vpSize.Y)
+                obj.tracer.To      = Vector2.new(rootSP.X, rootSP.Y)
+                obj.tracer.Color   = config.espTracerColor
+                obj.tracer.Visible = true
+            else
+                obj.tracer.Visible = false
+            end
+        end
+    end))
+end
+
+local function espHookCharacter(p)
+    gc(p.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        if config.espChams then espApplyChams(p, true) end
+    end))
+end
+
+local function espInit()
+    for _, p in pairs(Services.Players:GetPlayers()) do
+        if p ~= plr then
+            espMakeObjects(p)
+            espHookCharacter(p)
+            if config.espChams then espApplyChams(p, true) end
+        end
+    end
+    gc(Services.Players.PlayerAdded:Connect(function(p)
+        espMakeObjects(p)
+        espHookCharacter(p)
+    end))
+    gc(Services.Players.PlayerRemoving:Connect(function(p)
+        espRemoveObjects(p)
+    end))
+    espStartRender()
+end
+
+-- Setters called by UI toggles
+local function SetEsp(espType, enabled)
+    config["esp"..espType] = enabled
+    if espType == "Chams" then espRebuildAll() end
+end
+
+local function espDestroyAll()
+    for p, _ in pairs(espObjects) do espRemoveObjects(p) end
+    espObjects = {}
 end
 
 -- ─── Nametag Override ────────────────────────────────────────────────────────
@@ -1240,7 +1487,7 @@ local function Unload()
     ClearNametags()
 
     -- destroy IY ESP
-    if IYEsp then pcall(function() IYEsp:Destroy() end); IYEsp=nil end
+    espDestroyAll()
 
     -- remove all Drawing objects (aimbotCircle, crosshairDrawing, any others)
     for _, d in ipairs(drawingObjects) do pcall(function() d:Remove() end) end
@@ -1268,6 +1515,8 @@ local function Unload()
     task.wait(0.05)
     if Library then pcall(function() Library:Unload() end) end
 end
+
+espInit()
 
 -- ─── UI ──────────────────────────────────────────────────────────────────────
 
@@ -1332,19 +1581,43 @@ TW:AddButton('Clear Whitelist',function() config.teamWhitelist={}; Notify({Title
 
 -- ESP Tab
 local ET = Tabs.ESP:AddLeftGroupbox('ESP Types')
-ET:AddToggle('BoxESP',    {Text='Box',            Default=false, Callback=function(v) SetIYEsp("box",v) end})
-ET:AddToggle('NameESP',   {Text='Name',           Default=false, Callback=function(v) SetIYEsp("name",v) end})
-ET:AddToggle('HealthESP', {Text='Health',         Default=false, Callback=function(v) SetIYEsp("health",v) end})
-ET:AddToggle('TracerESP', {Text='Tracers',        Default=false, Callback=function(v) SetIYEsp("tracer",v) end})
-ET:AddToggle('ChamsESP',  {Text='Chams',          Default=false, Callback=function(v) SetIYEsp("chams",v) end})
+ET:AddToggle('BoxESP',    {Text='Box',             Default=false, Callback=function(v) SetEsp("Box",v) end})
+ET:AddToggle('NameESP',   {Text='Name',            Default=false, Callback=function(v) SetEsp("Name",v) end})
+ET:AddToggle('HealthESP', {Text='Health Bar',      Default=false, Callback=function(v) SetEsp("Health",v) end})
+ET:AddToggle('TracerESP', {Text='Tracers',         Default=false, Callback=function(v) SetEsp("Tracer",v) end})
+ET:AddToggle('ChamsESP',  {Text='Chams',           Default=false, Callback=function(v) SetEsp("Chams",v) end})
 ET:AddToggle('Nametags',  {Text='Nametag Override',Default=false, Callback=function(v) ToggleNametags(v) end})
 
 local ES = Tabs.ESP:AddRightGroupbox('ESP Settings')
-ES:AddSlider('ESPDist',  {Text='Distance',   Min=100,Max=5000,Default=1000,Rounding=0,Callback=function(v)
-    config.espDistance=v; if IYEsp then pcall(function() IYEsp.MaxDistance=v end) end
+ES:AddSlider('ESPDist', {Text='Distance', Min=100, Max=5000, Default=1000, Rounding=0, Callback=function(v)
+    config.espDistance = v
 end})
-ES:AddToggle('ESPTeam',  {Text='Team Check', Default=false, Callback=function(v)
-    config.espTeamCheck=v; if IYEsp then pcall(function() IYEsp.TeamCheck=v end) end
+ES:AddToggle('ESPTeam', {Text='Team Check', Default=false, Callback=function(v)
+    config.espTeamCheck = v
+end})
+ES:AddDropdown('ESPNameMode', {
+    Text   = 'Name Display',
+    Values = {'Both', 'Display', 'Username'},
+    Default = 1,
+    Multi  = false,
+    Callback = function(v) config.espNameMode = v end,
+})
+ES:AddLabel('Box Color'):AddColorPicker('ESPBoxColor', {Default=Color3.fromRGB(255,50,50), Callback=function(v)
+    config.espBoxColor = v
+end})
+ES:AddLabel('Name Color'):AddColorPicker('ESPNameColor', {Default=Color3.fromRGB(255,255,255), Callback=function(v)
+    config.espNameColor = v
+end})
+ES:AddLabel('Tracer Color'):AddColorPicker('ESPTracerColor', {Default=Color3.fromRGB(255,50,50), Callback=function(v)
+    config.espTracerColor = v
+end})
+ES:AddLabel('Chams Color'):AddColorPicker('ESPChamsColor', {Default=Color3.fromRGB(255,50,50), Callback=function(v)
+    config.espChamsColor = v
+    espUpdateChamsColor()
+end})
+ES:AddSlider('ESPChamsAlpha', {Text='Chams Opacity', Min=0, Max=1, Default=0.6, Rounding=2, Callback=function(v)
+    config.espChamsAlpha = v
+    espUpdateChamsColor()
 end})
 
 -- Visual Tab
