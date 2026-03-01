@@ -8,7 +8,7 @@ local SaveManager   = loadstring(game:HttpGet('https://raw.githubusercontent.com
 
 
 local Window = Library:CreateWindow({
-    Title    = 'Reznov Hub v1.2 | niggarware',
+    Title    = 'Reznov Hub v1.2',
     Center   = true,
     AutoShow = true,
 })
@@ -486,55 +486,55 @@ local function ToggleAimbot(enabled)
     if enabled then
         if not aimbotCircle then aimbotCircle = CreateAimbotFOV() end
         aimbotCircle.Visible = config.aimbotShowFOV
+        -- activate immediately when enabled, no separate key press needed by default
+        state.aimbotActive = true
         gc(Services.RunService.RenderStepped:Connect(function()
             if not state.aimbotEnabled then return end
             local mp = Services.UIS:GetMouseLocation()
             aimbotCircle.Position = mp
             aimbotCircle.Radius   = config.aimbotFOV
-            aimbotCircle.Color    = (state.aimbotActive and state.aimbotTarget)
+            aimbotCircle.Color    = state.aimbotTarget
                 and Color3.fromRGB(255,50,50) or Color3.fromRGB(255,255,255)
             aimbotCircle.Visible  = config.aimbotShowFOV
             if not state.aimbotActive then return end
             local now = tick()
-            -- FIX: sticky target check happens BEFORE the switch-delay check
+
             if config.aimbotSticky and state.aimbotTarget and state.aimbotTarget.Character then
                 local tp = state.aimbotTarget.Character:FindFirstChild(config.aimbotPart)
                 if tp then
                     local tpos = camera:WorldToViewportPoint(tp.Position)
-                    pcall(function() mousemoverel(
-                        mp.X+(tpos.X-mp.X)/config.aimbotSmoothing - mp.X,
-                        mp.Y+(tpos.Y-mp.Y)/config.aimbotSmoothing - mp.Y
-                    ) end)
+                    local dx = (tpos.X - mp.X) / config.aimbotSmoothing
+                    local dy = (tpos.Y - mp.Y) / config.aimbotSmoothing
+                    pcall(mousemoverel, dx, dy)
                     return
                 end
             end
+
             local target = GetAimbotTarget()
             if target ~= state.aimbotTarget then
-                if now-state.aimbotLastSwitch < config.aimbotSwitchDelay then
+                if now - state.aimbotLastSwitch < config.aimbotSwitchDelay then
                     target = state.aimbotTarget
                 else
-                    state.aimbotTarget   = target
+                    state.aimbotTarget    = target
                     state.aimbotLastSwitch = now
                 end
             end
+
             if target and target.Character then
                 local tp = target.Character:FindFirstChild(config.aimbotPart)
                 if tp then
-                    local tpos
+                    local targetPos
                     if config.aimbotPrediction then
                         local root = target.Character:FindFirstChild("HumanoidRootPart")
-                        if root then
-                            tpos = camera:WorldToViewportPoint(tp.Position+root.AssemblyLinearVelocity*config.aimbotPredictionAmount)
-                        else
-                            tpos = camera:WorldToViewportPoint(tp.Position)
-                        end
+                        targetPos = root
+                            and camera:WorldToViewportPoint(tp.Position + root.AssemblyLinearVelocity * config.aimbotPredictionAmount)
+                            or  camera:WorldToViewportPoint(tp.Position)
                     else
-                        tpos = camera:WorldToViewportPoint(tp.Position)
+                        targetPos = camera:WorldToViewportPoint(tp.Position)
                     end
-                    pcall(function() mousemoverel(
-                        mp.X+(tpos.X-mp.X)/config.aimbotSmoothing - mp.X,
-                        mp.Y+(tpos.Y-mp.Y)/config.aimbotSmoothing - mp.Y
-                    ) end)
+                    local dx = (targetPos.X - mp.X) / config.aimbotSmoothing
+                    local dy = (targetPos.Y - mp.Y) / config.aimbotSmoothing
+                    pcall(mousemoverel, dx, dy)
                 end
             else
                 state.aimbotTarget = nil
@@ -543,7 +543,8 @@ local function ToggleAimbot(enabled)
         Notify({Title="Aimbot", Text="Enabled", Duration=2})
     else
         if aimbotCircle then aimbotCircle.Visible=false end
-        state.aimbotActive=false; state.aimbotTarget=nil
+        state.aimbotActive = false
+        state.aimbotTarget = nil
         Notify({Title="Aimbot", Text="Disabled", Duration=1})
     end
 end
@@ -614,31 +615,29 @@ end
 local function espApplyChams(p, enable)
     local obj = espObjects[p]
     if not obj then return end
-    -- remove old chams first
     for _, c in ipairs(obj.chams) do pcall(function() c:Destroy() end) end
     obj.chams = {}
     if not enable or not p.Character then return end
-    for _, part in ipairs(p.Character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            local hl = Instance.new("SelectionBox")
-            hl.Adornee        = part
-            hl.Color3         = config.espChamsColor
-            hl.LineThickness  = 0
-            hl.SurfaceColor3  = config.espChamsColor
-            hl.SurfaceTransparency = config.espChamsAlpha
-            hl.Parent         = Services.CoreGui
-            table.insert(obj.chams, hl)
-        end
-    end
+
+    -- one Highlight on the character model — no per-part box spam
+    local hl = Instance.new("Highlight")
+    hl.Adornee         = p.Character
+    hl.FillColor       = config.espChamsColor
+    hl.FillTransparency = config.espChamsAlpha
+    hl.OutlineColor    = config.espChamsColor
+    hl.OutlineTransparency = 0
+    hl.DepthMode       = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent          = Services.CoreGui
+    table.insert(obj.chams, hl)
 end
 
 local function espUpdateChamsColor()
-    for p, obj in pairs(espObjects) do
+    for _, obj in pairs(espObjects) do
         for _, c in ipairs(obj.chams) do
             pcall(function()
-                c.Color3           = config.espChamsColor
-                c.SurfaceColor3    = config.espChamsColor
-                c.SurfaceTransparency = config.espChamsAlpha
+                c.FillColor            = config.espChamsColor
+                c.OutlineColor         = config.espChamsColor
+                c.FillTransparency     = config.espChamsAlpha
             end)
         end
     end
@@ -1555,9 +1554,9 @@ PK:AddLabel('TP Mouse'):AddKeyPicker('TPKey',   {Default='None',NoDefault=true,S
 -- Combat Tab
 local AB = Tabs.Combat:AddLeftGroupbox('Aimbot')
 AB:AddToggle('Aimbot',      {Text='Enable Aimbot', Default=false, Callback=function(v) ToggleAimbot(v) end})
-AB:AddLabel('Aimbot Key'):AddKeyPicker('AimbotKey',{Default='None',NoDefault=true,Mode='Toggle',Text='Aimbot',Callback=function()
-    state.aimbotActive=not state.aimbotActive
-    Notify({Title="Aimbot",Text=state.aimbotActive and "Active" or "Inactive",Duration=1})
+AB:AddLabel('Pause Key'):AddKeyPicker('AimbotKey',{Default='None',NoDefault=true,Mode='Toggle',Text='Pause Aim',Callback=function()
+    state.aimbotActive = not state.aimbotActive
+    Notify({Title="Aimbot", Text=state.aimbotActive and "Resumed" or "Paused", Duration=1})
 end})
 AB:AddToggle('AimbotFOVShow',{Text='Show FOV Circle',Default=true, Callback=function(v) config.aimbotShowFOV=v if aimbotCircle then aimbotCircle.Visible=v and state.aimbotEnabled end end})
 AB:AddSlider('AimbotFOV',    {Text='FOV',      Min=50,  Max=500, Default=200,  Rounding=0, Callback=function(v) config.aimbotFOV=v end})
