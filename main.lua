@@ -8,7 +8,7 @@ local SaveManager   = loadstring(game:HttpGet('https://raw.githubusercontent.com
 
 
 local Window = Library:CreateWindow({
-    Title    = 'Reznov Hub v1.2',
+    Title    = 'Reznov Hub v1.2 | niggaware OT',
     Center   = true,
     AutoShow = true,
 })
@@ -102,6 +102,8 @@ local config = {
     aimbotPredictionAmount = 0.15,
     aimbotSticky           = false,
     aimbotSwitchDelay      = 0.5,
+    aimbotKeyMode          = "Toggle",  -- "Toggle" or "Hold"
+    aimbotBoundKey         = nil,       -- Enum.KeyCode or nil
 
     espDistance   = 1000,
     espTeamCheck  = false,
@@ -486,8 +488,8 @@ local function ToggleAimbot(enabled)
     if enabled then
         if not aimbotCircle then aimbotCircle = CreateAimbotFOV() end
         aimbotCircle.Visible = config.aimbotShowFOV
-        -- activate immediately when enabled, no separate key press needed by default
-        state.aimbotActive = true
+        -- in Toggle mode, aim is on immediately. In Hold mode, wait for key press.
+        state.aimbotActive = config.aimbotKeyMode == "Toggle"
         gc(Services.RunService.RenderStepped:Connect(function()
             if not state.aimbotEnabled then return end
             local mp = Services.UIS:GetMouseLocation()
@@ -1553,11 +1555,68 @@ PK:AddLabel('TP Mouse'):AddKeyPicker('TPKey',   {Default='None',NoDefault=true,S
 
 -- Combat Tab
 local AB = Tabs.Combat:AddLeftGroupbox('Aimbot')
-AB:AddToggle('Aimbot',      {Text='Enable Aimbot', Default=false, Callback=function(v) ToggleAimbot(v) end})
-AB:AddLabel('Pause Key'):AddKeyPicker('AimbotKey',{Default='None',NoDefault=true,Mode='Toggle',Text='Pause Aim',Callback=function()
-    state.aimbotActive = not state.aimbotActive
-    Notify({Title="Aimbot", Text=state.aimbotActive and "Resumed" or "Paused", Duration=1})
-end})
+AB:AddToggle('Aimbot', {Text='Enable Aimbot', Default=false, Callback=function(v) ToggleAimbot(v) end})
+
+AB:AddDropdown('AimbotKeyMode', {
+    Text    = 'Aim Key Mode',
+    Values  = {'Toggle', 'Hold'},
+    Default = 1,
+    Multi   = false,
+    Callback = function(v)
+        config.aimbotKeyMode = v
+        -- when switching to hold, ensure aim is off until key is held
+        if v == "Hold" and state.aimbotEnabled then
+            state.aimbotActive = false
+        elseif v == "Toggle" and state.aimbotEnabled then
+            state.aimbotActive = true
+        end
+    end,
+})
+
+do
+    local aimKeyCode = nil
+
+    local function onKeyDown(input, gp)
+        if gp or not aimKeyCode then return end
+        if input.KeyCode ~= aimKeyCode then return end
+        if not state.aimbotEnabled then return end
+        if config.aimbotKeyMode == "Toggle" then
+            state.aimbotActive = not state.aimbotActive
+        else
+            state.aimbotActive = true
+        end
+    end
+
+    local function onKeyUp(input)
+        if not aimKeyCode then return end
+        if input.KeyCode ~= aimKeyCode then return end
+        if config.aimbotKeyMode == "Hold" and state.aimbotEnabled then
+            state.aimbotActive = false
+        end
+    end
+
+    gc(Services.UIS.InputBegan:Connect(onKeyDown))
+    gc(Services.UIS.InputEnded:Connect(onKeyUp))
+
+    AB:AddLabel('Aim Key'):AddKeyPicker('AimbotKey', {
+        Default    = 'None',
+        NoDefault  = true,
+        Mode       = 'Toggle',
+        Text       = 'Aim Key',
+        Callback   = function()
+            -- KeyPicker fires on each press; we handle input ourselves above
+            -- so this callback is intentionally empty
+        end,
+        ChangedCallback = function(newKey)
+            aimKeyCode = newKey
+            -- when a key is bound, reset active state to match current mode
+            if state.aimbotEnabled then
+                state.aimbotActive = config.aimbotKeyMode == "Toggle"
+            end
+        end,
+    })
+end
+
 AB:AddToggle('AimbotFOVShow',{Text='Show FOV Circle',Default=true, Callback=function(v) config.aimbotShowFOV=v if aimbotCircle then aimbotCircle.Visible=v and state.aimbotEnabled end end})
 AB:AddSlider('AimbotFOV',    {Text='FOV',      Min=50,  Max=500, Default=200,  Rounding=0, Callback=function(v) config.aimbotFOV=v end})
 AB:AddSlider('AimbotSmooth', {Text='Smoothing',Min=1,   Max=20,  Default=5,    Rounding=1, Callback=function(v) config.aimbotSmoothing=v end})
